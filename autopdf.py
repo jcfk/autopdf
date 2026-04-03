@@ -102,7 +102,9 @@ def rename_pdf(fpath, metadata):
 
     if not new_fpath.exists():
         fpath.rename(new_fpath)
-        print(f"Renamed {fpath} --> {new_fpath}")
+        print(f"Renamed {fpath})
+        print(f"    --> {new_fpath}")
+        print()
 
 
 def main():
@@ -111,7 +113,7 @@ def main():
     parser.add_argument(
         "--last-page",
         type=int,
-        default="4",
+        default=4,
         help="extract metadata from up to this page, 0-indexed",
     )
     args = parser.parse_args()
@@ -121,10 +123,10 @@ def main():
         metadata = parse_pdf_metadata(fpath, last_page=args.last_page)
         if metadata.error:
             print(f"Error processing {fpath}; skipping")
+            print()
             continue
 
         new_fpath = rename_pdf(fpath, metadata)
-
 
 if __name__ == "__main__":
     main()
