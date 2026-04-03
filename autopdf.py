@@ -71,7 +71,8 @@ def parse_pdf_metadata(fpath, last_page):
             " Format your  response as a  json object,  where 'year' is  an int,"
             " 'title' is a  string, 'authors' is a list of  surname strings, and"
             " 'error' is a boolean  that is true if and only  if the task cannot"
-            " be completed."
+            " be completed. Return error if the document does not possess all"
+            " three fields."
             " The title  should be normalized  if necessary. That means,  if the"
             " title is in all caps in the pdf, capitalization should be adjusted"
             " to   standard   titlecase.   Capitalized   acronyms   may   remain"
@@ -115,6 +116,10 @@ def main():
     for fpath in args.fpath:
         fpath = Path(fpath)
         metadata = parse_pdf_metadata(fpath, last_page=args.last_page)
+        if metadata.error:
+            print(f"Error processing {fpath}; skipping")
+            continue
+
         new_fpath = rename_pdf(fpath, metadata)
 
 
