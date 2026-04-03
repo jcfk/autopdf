@@ -95,12 +95,15 @@ def rename_pdf(fpath, metadata):
     first_author = metadata.author_surnames[0]
     multi_author = len(metadata.author_surnames) > 1
 
-    new_fname = f"({year}) {title} ({first_author}{" et al." if multi_author else ""}).pdf"
+    new_fname = (
+        f"({year}) {title} ({first_author}{' et al.' if multi_author else ''}).pdf"
+    )
     new_fpath = Path(fpath.parent, new_fname)
 
     if not new_fpath.exists():
         fpath.rename(new_fpath)
         print(f"Renamed {fpath} --> {new_fpath}")
+
 
 def main():
     parser = argparse.ArgumentParser("autopdf")
