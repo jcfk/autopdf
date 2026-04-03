@@ -102,7 +102,7 @@ def rename_pdf(fpath, metadata):
 
     if not new_fpath.exists():
         fpath.rename(new_fpath)
-        print(f"Renamed {fpath})
+        print(f"Renamed {fpath}")
         print(f"    --> {new_fpath}")
         print()
 
@@ -127,6 +127,7 @@ def main():
             continue
 
         new_fpath = rename_pdf(fpath, metadata)
+
 
 if __name__ == "__main__":
     main()
