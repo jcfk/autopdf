@@ -81,6 +81,7 @@ def parse_pdf_metadata(fpath, last_page):
             " The author list should include surnames in the order in which they"
             " appear  in the  document.  The first  author's  surname should  be"
             " first. The same normalization rules apply to author surnames."
+            f" You may take into account the file name, which is '{fpath.name}'."
         )
 
         # breakpoint()
