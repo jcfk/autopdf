@@ -20,6 +20,7 @@ from pypdf import PdfReader, PdfWriter
 from pydantic import BaseModel
 
 
+args = None
 fpath = None
 
 
@@ -154,7 +155,17 @@ def rename_pdf(fpath, metadata):
 
 
 def parse_pdf_toc_naive(fpath):
-    with open(fpath, "rb") as f:
+    with tempfile.TemporaryFile() as f:
+        reader = PdfReader(fpath)
+        writer = PdfWriter()
+        if args.make_toc_last_page:
+            for i in range(min(len(reader.pages), args.make_toc_last_page)):
+                writer.add_page(reader.pages[i])
+        else:
+            writer.append_pages_from_reader(reader)
+        writer.write(f)
+
+        f.seek(0)
         data = f.read()
 
     data_b64 = base64.b64encode(data).decode("utf-8")
@@ -283,7 +294,8 @@ def adjust_section_pagenum(section, file_data, physical_offset, with_file=False)
 
 def parse_pdf_toc(fpath, reader, adjust_with_file=False):
     toc = parse_pdf_toc_naive(fpath)
-    print("Parsed naive toc")
+    print("Preliminary naive toc:")
+    pprint_toc(toc)
 
     # Adjust page numbers
     def flatten_toc(sections):
@@ -347,25 +359,31 @@ def apply_pdf_toc(fpath, toc):
 
 
 def main():
-    global fpath
+    global args, fpath
     parser = argparse.ArgumentParser("autopdf")
     parser.add_argument("cmd")
     parser.add_argument("fpath", nargs="+")
     parser.add_argument(
-        "--last-page",
+        "--rename-last-page",
         type=int,
         default=4,
         help="extract metadata from up to this page, 0-indexed",
     )
-    parser.add_argument("--adjust-with-file", action="store_true")
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--make-toc-last-page",
+        type=int,
+        default=None,
+        help="parse frontmatter for toc up to this page, 1-indexed",
+    )
+    parser.add_argument("--make-toc-adjust-with-file", action="store_true")
+    parser.add_argument("--make-toc-force", action="store_true")
     args = parser.parse_args()
 
     for fpath in args.fpath:
         fpath = Path(fpath)
 
         if args.cmd == "rename":
-            parsed_metadata = parse_pdf_metadata(fpath, last_page=args.last_page)
+            parsed_metadata = parse_pdf_metadata(fpath, last_page=args.rename_last_page)
             if parsed_metadata.error:
                 print(f"Error processing {fpath}; skipping")
                 print()
@@ -374,12 +392,14 @@ def main():
             new_fpath = rename_pdf(fpath, metadata)
         elif args.cmd == "make-toc":
             reader = PdfReader(fpath)
-            if len(reader.outline) > 0 and not args.force:
+            if len(reader.outline) > 0 and not args.make_toc_force:
                 print(f"PDF has TOC (use --force): {fpath}; skipping")
                 print()
                 continue
 
-            toc = parse_pdf_toc(fpath, reader, adjust_with_file=args.adjust_with_file)
+            toc = parse_pdf_toc(
+                fpath, reader, adjust_with_file=args.make_toc_adjust_with_file
+            )
             apply_pdf_toc(fpath, toc)
         else:
             err(f"Unknown cmd {args.cmd}")
