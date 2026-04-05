@@ -11,7 +11,9 @@ import base64
 import tempfile
 import sys
 from pathlib import Path
+from io import BytesIO
 
+import pdf2image
 from openai import OpenAI
 from pypdf import PdfReader, PdfWriter
 from pydantic import BaseModel
@@ -42,26 +44,42 @@ def err(msg=None):
     sys.exit(msg if msg else 1)
 
 
-def llm_helpful_assistant(prompt, file_data=None, response_format=None):
+def llm_helpful_assistant(
+    prompt, reasoning="none", media_type=None, media_data=None, response_format=None
+):
     client = OpenAI()
+
+    message_content = [
+        {"type": "input_text", "text": prompt},
+    ]
+    if media_type == "file":
+        message_content.append(
+            {
+                "type": "input_file",
+                "filename": media_data["fname"],
+                # https://community.openai.com/t/issue-with-native-pdf-input-base64-in-gpt-4o-error-invalid-input-0-content-1-file-data/1377908
+                "file_data": f"data:application/pdf;base64,{media_data['data_b64']}",
+            }
+        )
+    # https://developers.openai.com/api/docs/guides/images-vision?format=base64-encoded#analyze-images
+    elif media_type == "image":
+        message_content.append(
+            {
+                "type": "input_image",
+                "image_url": f"data:image/jpeg;base64,{media_data['data_b64']}",
+            }
+        )
 
     # I have no idea  what this api is. It's not in the  api reference, but it's
     # in the structured outputs page: https://developers.openai.com/api/docs/guides/structured-outputs
     response = client.responses.parse(
         model="gpt-5.4-nano",
+        reasoning={"effort": reasoning},
         text_format=response_format,
         input=[
             {
                 "role": "user",
-                "content": [
-                    {"type": "input_text", "text": prompt},
-                    {
-                        "type": "input_file",
-                        "filename": file_data["fname"],
-                        # https://community.openai.com/t/issue-with-native-pdf-input-base64-in-gpt-4o-error-invalid-input-0-content-1-file-data/1377908
-                        "file_data": f"data:application/pdf;base64,{file_data['data_b64']}",
-                    },
-                ],
+                "content": message_content,
             }
         ],
     )
@@ -103,9 +121,11 @@ def parse_pdf_metadata(fpath, last_page):
             f" You may take into account the file name, which is '{fpath.name}'."
         )
 
-        # breakpoint()
         output = llm_helpful_assistant(
-            message, file_data, response_format=ParsedPDFMetadata
+            message,
+            media_type="file",
+            media_data=file_data,
+            response_format=ParsedPDFMetadata,
         )
 
         return output
@@ -161,24 +181,20 @@ def parse_pdf_toc_naive(fpath):
     )
 
     output = llm_helpful_assistant(
-        message, file_data, response_format=ParsedPDFTocTopLevel
+        message,
+        media_type="file",
+        media_data=file_data,
+        response_format=ParsedPDFTocTopLevel,
     )
 
     return output
 
 
-def confirm_section_pagenum(section, fpath, pagenum):
-    with tempfile.TemporaryFile() as f:
-        reader = PdfReader(fpath)
-        writer = PdfWriter()
-        writer.add_page(reader.pages[pagenum])
-        writer.write(f)
-
-        f.seek(0)
-        data = f.read()
-
-    data_b64 = base64.b64encode(data).decode("utf-8")
-    file_data = {"fname": fpath.name, "data_b64": data_b64}
+def confirm_section_pagenum(section, img):
+    buf = BytesIO()
+    img.save(buf, format="JPEG")
+    data_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    img_data = {"data_b64": data_b64}
 
     message = (
         "You  are part  of  a  system that  automatically  generates tables  of"
@@ -200,14 +216,18 @@ def confirm_section_pagenum(section, fpath, pagenum):
     )
 
     output = llm_helpful_assistant(
-        message, file_data, response_format=ConfirmPDFSectionPagenum
+        message,
+        reasoning="low",
+        media_type="image",
+        media_data=img_data,
+        response_format=ConfirmPDFSectionPagenum,
     )
 
     # breakpoint()
     return output.confirmed
 
 
-def adjust_section_pagenum(section, fpath, physical_offset):
+def adjust_section_pagenum(section, pdf_images, physical_offset):
     fpath_len = 259
     pages = list(range(fpath_len))
     pages.reverse()
@@ -216,15 +236,13 @@ def adjust_section_pagenum(section, fpath, physical_offset):
     search_start_i = section.pagenum - 1 + physical_offset
     while True:
         # Search forward, then backward, with an increasing radius
-        current_search_i = min(
-            pages, key=lambda x: abs(x - search_start_i)
-        )
+        current_search_i = min(pages, key=lambda x: abs(x - search_start_i))
         pages.remove(current_search_i)
 
         print(
             f"Searching for section {section.title} (pagenum: {section.pagenum}) at PDF page {current_search_i}"
         )
-        if confirm_section_pagenum(section, fpath, current_search_i):
+        if confirm_section_pagenum(section, pdf_images[current_search_i]):
             break
 
     section.pagenum = current_search_i + 1
@@ -251,10 +269,11 @@ def parse_pdf_toc(fpath):
 
     # breakpoint()
 
+    pdf_images = pdf2image.convert_from_path(fpath)
     current_physical_offset = 0
     for section in flat_naive_toc:
         current_physical_offset = adjust_section_pagenum(
-            section, fpath, current_physical_offset
+            section, pdf_images, current_physical_offset
         )
         print(f"Confirmed section {section.title} (at page {section.pagenum})")
         # breakpoint()
