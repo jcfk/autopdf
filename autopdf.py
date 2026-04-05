@@ -275,7 +275,7 @@ def parse_pdf_toc(fpath, reader):
             section, pdf_images, current_physical_offset
         )
         if confirmed:
-            print(f"Confirmed section {section.title} (at page {section.pagenum})")
+            print(f"Confirmed section {section.title} (at page {section.pagenum + 1})")
         else:
             print(f"Could not find section {section.title}")
 
