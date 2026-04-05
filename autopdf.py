@@ -416,3 +416,4 @@ if __name__ == "__main__":
 # - Track expenses at end and if cancelled
 # - Heuristic: increase reasoning level and try close ones in confirmation again
 #   if getting real far away.
+# - Numbered section titles in the outline
