@@ -34,6 +34,10 @@ class ParsedPDFTocTopLevel(BaseModel):
     sections: list[ParsedPDFTocSection]
 
 
+class ConfirmPDFSectionPagenum(BaseModel):
+    confirmed: bool
+
+
 def err(msg=None):
     sys.exit(msg if msg else 1)
 
@@ -130,7 +134,7 @@ def check_pdf_toc_exists(fpath):
     return True if len(reader.outline) > 0 else False
 
 
-def parse_pdf_toc(fpath):
+def parse_pdf_toc_naive(fpath):
     with open(fpath, "rb") as f:
         data = f.read()
 
@@ -140,9 +144,7 @@ def parse_pdf_toc(fpath):
     message = (
         "Parse the table of contents from the content of the PDF, which may"
         " be  an academic  paper or  a  book. Detect  section titles,  their"
-        " physical page numbers, and  their child subsections. Do not"
-        " merely parse  the in-text  table of  contents; ensure  parsed page"
-        " numbers correspond to page numbers in the physical PDF, 1-indexed."
+        " page numbers, and  their child subsections."
         " Include administrative  sections such as the  preface, references,"
         " and index, if any exist."
         " Format  your response  as a  nested top  level json  object, where"
@@ -163,6 +165,101 @@ def parse_pdf_toc(fpath):
     )
 
     return output
+
+
+def confirm_section_pagenum(section, fpath, pagenum):
+    with tempfile.TemporaryFile() as f:
+        reader = PdfReader(fpath)
+        writer = PdfWriter()
+        writer.add_page(reader.pages[pagenum])
+        writer.write(f)
+
+        f.seek(0)
+        data = f.read()
+
+    data_b64 = base64.b64encode(data).decode("utf-8")
+    file_data = {"fname": fpath.name, "data_b64": data_b64}
+
+    message = (
+        "You  are part  of  a  system that  automatically  generates tables  of"
+        " contents for  books and  articles by  scanning through  individual PDF"
+        " pages and  locating section  headers. You  will be  given 1)  a header"
+        " pair, consisting of a section title and a page number, and 2) a single"
+        " candidate page of a PDF."
+        " Determine  whether or  not the  header pair  corresponds to  the given"
+        " candidate page,  namely whether the  section named in the  header pair"
+        " actually begins  on the given page.  This is true, for  example, if"
+        " the page  contains large,  header-shaped text  identical to  the given"
+        " section title and the page number shown in the page is identical to"
+        " the given page number."
+        " Format  your response  as a  json object  containing a  single boolean"
+        " field 'confirmed', which is true iff the candidate page is a match."
+        " The header pair is as follows:"
+        f" Title: '{section.title}'"
+        f" Page number: '{section.pagenum}'"
+    )
+
+    output = llm_helpful_assistant(
+        message, file_data, response_format=ConfirmPDFSectionPagenum
+    )
+
+    # breakpoint()
+    return output.confirmed
+
+
+def adjust_section_pagenum(section, fpath, physical_offset):
+    fpath_len = 259
+    pages = list(range(fpath_len))
+    pages.reverse()
+
+    # Note section.pagenum is probably 1-indexed
+    search_start_i = section.pagenum - 1 + physical_offset
+    while True:
+        # Search forward, then backward, with an increasing radius
+        current_search_i = min(
+            pages, key=lambda x: abs(x - search_start_i)
+        )
+        pages.remove(current_search_i)
+
+        print(
+            f"Searching for section {section.title} (pagenum: {section.pagenum}) at PDF page {current_search_i}"
+        )
+        if confirm_section_pagenum(section, fpath, current_search_i):
+            break
+
+    section.pagenum = current_search_i + 1
+    return physical_offset + current_signed_radius
+
+
+def parse_pdf_toc(fpath):
+    toc = parse_pdf_toc_naive(fpath)
+    print("Parsed naive toc")
+
+    # Adjust page numbers
+    def flatten_toc(sections):
+        flat_toc = []
+        for section in sections:
+            flat_toc.append(section)
+            flat_toc.extend(flatten_toc(section.subsections))
+
+        return flat_toc
+
+    flat_naive_toc = []
+    for section in toc.sections:
+        flat_naive_toc.append(section)
+        flat_naive_toc.extend(flatten_toc(section.subsections))
+
+    # breakpoint()
+
+    current_physical_offset = 0
+    for section in flat_naive_toc:
+        current_physical_offset = adjust_section_pagenum(
+            section, fpath, current_physical_offset
+        )
+        print(f"Confirmed section {section.title} (at page {section.pagenum})")
+        # breakpoint()
+
+    return toc
 
 
 def pprint_toc(toc):
