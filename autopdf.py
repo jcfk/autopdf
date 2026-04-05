@@ -20,6 +20,9 @@ from pypdf import PdfReader, PdfWriter
 from pydantic import BaseModel
 
 
+fpath = None
+
+
 class ParsedPDFMetadata(BaseModel):
     year: int
     title: str
@@ -186,12 +189,7 @@ def parse_pdf_toc_naive(fpath):
     return output
 
 
-def confirm_section_pagenum(section, img):
-    buf = BytesIO()
-    img.save(buf, format="JPEG")
-    data_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-    img_data = {"data_b64": data_b64}
-
+def confirm_section_pagenum(section, page_data, data_type):
     message = (
         "You  are part  of  a  system that  automatically  generates tables  of"
         " contents for  books and  articles by  scanning through  individual PDF"
@@ -210,21 +208,45 @@ def confirm_section_pagenum(section, img):
         f" Title: '{section.title}'"
         f" Page number: '{section.pagenum}'"
     )
+    if data_type == "file":
+        with tempfile.TemporaryFile() as f:
+            writer = PdfWriter()
+            writer.add_page(page_data)
+            writer.write(f)
 
-    output = llm_helpful_assistant(
-        message,
-        reasoning="medium",
-        media_type="image",
-        media_data=img_data,
-        response_format=ConfirmPDFSectionPagenum,
-    )
+            f.seek(0)
+            data = f.read()
+
+        data_b64 = base64.b64encode(data).decode("utf-8")
+        file_data = {"fname": fpath.name, "data_b64": data_b64}
+
+        output = llm_helpful_assistant(
+            message,
+            reasoning="medium",
+            media_type="file",
+            media_data=file_data,
+            response_format=ConfirmPDFSectionPagenum,
+        )
+    elif data_type == "img":
+        buf = BytesIO()
+        page_data.save(buf, format="JPEG")
+        data_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        img_data = {"data_b64": data_b64}
+
+        output = llm_helpful_assistant(
+            message,
+            reasoning="medium",
+            media_type="image",
+            media_data=img_data,
+            response_format=ConfirmPDFSectionPagenum,
+        )
 
     return output.confirmed
 
 
-def adjust_section_pagenum(section, pdf_images, physical_offset):
+def adjust_section_pagenum(section, file_data, physical_offset, with_file=False):
     MAX_TRIES = 31  # radius 15
-    page_idxs = list(range(len(pdf_images)))
+    page_idxs = list(range(len(file_data.pages if with_file else file_data)))
     page_idxs.reverse()
 
     # Note section.pagenum is probably 1-indexed
@@ -239,7 +261,13 @@ def adjust_section_pagenum(section, pdf_images, physical_offset):
             f"Testing for section {section.title} (pagenum: {section.pagenum}) at pagenum {current_search_i + 1}"
         )
 
-        confirmed = confirm_section_pagenum(section, pdf_images[current_search_i])
+        confirmed = confirm_section_pagenum(
+            section,
+            file_data.pages[current_search_i]
+            if with_file
+            else file_data[current_search_i],
+            data_type=("file" if with_file else "img"),
+        )
         tries += 1
 
         if confirmed:
@@ -253,7 +281,7 @@ def adjust_section_pagenum(section, pdf_images, physical_offset):
     return False, physical_offset
 
 
-def parse_pdf_toc(fpath, reader):
+def parse_pdf_toc(fpath, reader, adjust_with_file=False):
     toc = parse_pdf_toc_naive(fpath)
     print("Parsed naive toc")
 
@@ -268,11 +296,16 @@ def parse_pdf_toc(fpath, reader):
 
     flat_naive_toc = flatten_toc(toc.sections)
 
-    pdf_images = pdf2image.convert_from_path(fpath)
+    if not adjust_with_file:
+        pdf_images = pdf2image.convert_from_path(fpath)
+
     current_physical_offset = 0
     for section in flat_naive_toc:
         confirmed, current_physical_offset = adjust_section_pagenum(
-            section, pdf_images, current_physical_offset
+            section,
+            reader if adjust_with_file else pdf_images,
+            current_physical_offset,
+            with_file=adjust_with_file,
         )
         if confirmed:
             print(f"Confirmed section {section.title} (at page {section.pagenum + 1})")
@@ -314,6 +347,7 @@ def apply_pdf_toc(fpath, toc):
 
 
 def main():
+    global fpath
     parser = argparse.ArgumentParser("autopdf")
     parser.add_argument("cmd")
     parser.add_argument("fpath", nargs="+")
@@ -323,6 +357,7 @@ def main():
         default=4,
         help="extract metadata from up to this page, 0-indexed",
     )
+    parser.add_argument("--adjust-with-file", action="store_true")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
@@ -344,7 +379,7 @@ def main():
                 print()
                 continue
 
-            toc = parse_pdf_toc(fpath, reader)
+            toc = parse_pdf_toc(fpath, reader, adjust_with_file=args.adjust_with_file)
             apply_pdf_toc(fpath, toc)
         else:
             err(f"Unknown cmd {args.cmd}")
@@ -359,3 +394,5 @@ if __name__ == "__main__":
 # - Allow configuring between img and file use in confirmation.
 # - Output messages in stderr
 # - Track expenses at end and if cancelled
+# - Heuristic: increase reasoning level and try close ones in confirmation again
+#   if getting real far away.
