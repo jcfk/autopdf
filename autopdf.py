@@ -4,6 +4,7 @@
 #     "openai",
 #     "pydantic",
 #     "pypdf",
+#     "pdf2image"
 # ]
 # ///
 import argparse
@@ -149,11 +150,6 @@ def rename_pdf(fpath, metadata):
         print()
 
 
-def check_pdf_toc_exists(fpath):
-    reader = PdfReader(fpath)
-    return True if len(reader.outline) > 0 else False
-
-
 def parse_pdf_toc_naive(fpath):
     with open(fpath, "rb") as f:
         data = f.read()
@@ -162,21 +158,21 @@ def parse_pdf_toc_naive(fpath):
     file_data = {"fname": fpath.name, "data_b64": data_b64}
 
     message = (
-        "Parse the table of contents from the content of the PDF, which may"
-        " be  an academic  paper or  a  book. Detect  section titles,  their"
-        " page numbers, and  their child subsections."
-        " Include administrative  sections such as the  preface, references,"
-        " and index, if any exist."
-        " Format  your response  as a  nested top  level json  object, where"
-        " 'sections'  is a  list  of top-level  toc  components. Each  toc"
-        " component is  a json object  where 'title' is a  string containing"
-        " the section  title, 'pagenum'  is an  int containing  the physical"
-        " page, and 'subsections'  is a list of child toc  components, in the"
-        " order in which they appear."
-        " For example,  subchapters of  a book should  be recorded  as child"
-        " sections of top-level  chapters,  which should  be recorded  as"
-        " child sections of major parts, if any exist."
-        " Normalize   section  titles   into   titlecase,  with   reasonable"
+        "Parse the table of contents of the PDF, which may be an academic paper"
+        " or a book. Detect section titles,  their page numbers, and their child"
+        " subsections."
+        " Include administrative  sections such as the  preface, references, and"
+        " index, if any exist."
+        " Format  your  response  as  a  nested top  level  json  object,  where"
+        " 'sections' is a  list of top-level toc components.  Each toc component"
+        " is a  json object  where 'title'  is a  string containing  the section"
+        " title,  'pagenum'  is  an  int   containing  the  physical  page,  and"
+        " 'subsections' is a list of child toc components, in the order in which"
+        " they appear."
+        " For  example,  subchapters of  a  book  should  be recorded  as  child"
+        " sections  of top-level  chapters, which  should be  recorded as  child"
+        " sections of major parts, if any exist."
+        " Normalize   section    titles   into   titlecase,    with   reasonable"
         " approximations of mathematical notation by ASCII characters."
     )
 
@@ -217,39 +213,47 @@ def confirm_section_pagenum(section, img):
 
     output = llm_helpful_assistant(
         message,
-        reasoning="low",
+        reasoning="medium",
         media_type="image",
         media_data=img_data,
         response_format=ConfirmPDFSectionPagenum,
     )
 
-    # breakpoint()
     return output.confirmed
 
 
 def adjust_section_pagenum(section, pdf_images, physical_offset):
-    fpath_len = 259
-    pages = list(range(fpath_len))
-    pages.reverse()
+    MAX_TRIES = 31  # radius 15
+    page_idxs = list(range(len(pdf_images)))
+    page_idxs.reverse()
 
     # Note section.pagenum is probably 1-indexed
     search_start_i = section.pagenum - 1 + physical_offset
-    while True:
+    tries = 0
+    while len(page_idxs) > 0:
         # Search forward, then backward, with an increasing radius
-        current_search_i = min(pages, key=lambda x: abs(x - search_start_i))
-        pages.remove(current_search_i)
+        current_search_i = min(page_idxs, key=lambda x: abs(x - search_start_i))
+        page_idxs.remove(current_search_i)
 
         print(
-            f"Searching for section {section.title} (pagenum: {section.pagenum}) at PDF page {current_search_i}"
+            f"Testing for section {section.title} (pagenum: {section.pagenum}) at pagenum {current_search_i + 1}"
         )
-        if confirm_section_pagenum(section, pdf_images[current_search_i]):
+
+        confirmed = confirm_section_pagenum(section, pdf_images[current_search_i])
+        tries += 1
+
+        if confirmed:
+            section.pagenum = current_search_i
+            return True, physical_offset + (current_search_i - search_start_i)
+
+        if tries > MAX_TRIES:
             break
 
-    section.pagenum = current_search_i + 1
-    return physical_offset + current_signed_radius
+    section.pagenum = -1  # TODO: unclean hack
+    return False, physical_offset
 
 
-def parse_pdf_toc(fpath):
+def parse_pdf_toc(fpath, reader):
     toc = parse_pdf_toc_naive(fpath)
     print("Parsed naive toc")
 
@@ -262,21 +266,18 @@ def parse_pdf_toc(fpath):
 
         return flat_toc
 
-    flat_naive_toc = []
-    for section in toc.sections:
-        flat_naive_toc.append(section)
-        flat_naive_toc.extend(flatten_toc(section.subsections))
-
-    # breakpoint()
+    flat_naive_toc = flatten_toc(toc.sections)
 
     pdf_images = pdf2image.convert_from_path(fpath)
     current_physical_offset = 0
     for section in flat_naive_toc:
-        current_physical_offset = adjust_section_pagenum(
+        confirmed, current_physical_offset = adjust_section_pagenum(
             section, pdf_images, current_physical_offset
         )
-        print(f"Confirmed section {section.title} (at page {section.pagenum})")
-        # breakpoint()
+        if confirmed:
+            print(f"Confirmed section {section.title} (at page {section.pagenum})")
+        else:
+            print(f"Could not find section {section.title}")
 
     return toc
 
@@ -302,7 +303,9 @@ def apply_pdf_toc(fpath, toc):
     def apply_pdf_toc_sub(writer, sections, parent=None):
         for section in sections:
             section_outline_item = writer.add_outline_item(
-                title=section.title, page_number=section.pagenum, parent=parent
+                title=section.title,
+                page_number=(section.pagenum if section.pagenum >= 0 else None),
+                parent=parent,
             )
             apply_pdf_toc_sub(writer, section.subsections, parent=section_outline_item)
 
@@ -335,12 +338,13 @@ def main():
 
             new_fpath = rename_pdf(fpath, metadata)
         elif args.cmd == "make-toc":
-            if check_pdf_toc_exists(fpath) and not args.force:
+            reader = PdfReader(fpath)
+            if len(reader.outline) > 0 and not args.force:
                 print(f"PDF has TOC (use --force): {fpath}; skipping")
                 print()
                 continue
 
-            toc = parse_pdf_toc(fpath)
+            toc = parse_pdf_toc(fpath, reader)
             apply_pdf_toc(fpath, toc)
         else:
             err(f"Unknown cmd {args.cmd}")
@@ -348,3 +352,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# TODO:
+# - Try higher reasoning with the naive method?
+# - Allow configuring between img and file use in confirmation.
+# - Output messages in stderr
+# - Track expenses at end and if cancelled
