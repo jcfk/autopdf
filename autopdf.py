@@ -49,6 +49,20 @@ class ConfirmPDFSectionPagenum(BaseModel):
     confirmed: bool
 
 
+class ParsedPDFIndexFlatEntry(BaseModel):
+    name: str
+    page_number: int
+
+
+class ParsedPDFIndexEntry(BaseModel):
+    name: str
+    page_numbers: list[int]
+
+
+class ParsedPDFIndex(BaseModel):
+    entries: list[ParsedPDFIndexEntry]
+
+
 def err(msg=None):
     sys.exit(msg if msg else 1)
 
@@ -97,10 +111,27 @@ def llm_helpful_assistant(
     tok_out = response.usage.output_tokens
     usage["tok_in"] += tok_in
     usage["tok_out"] += tok_out
-    usage["est_cost"] += tok_in/1000000 * SELECTED_MODEL["cost_in_1m"] + tok_out/1000000 * SELECTED_MODEL["cost_out_1m"]
+    usage["est_cost"] += (
+        tok_in / 1000000 * SELECTED_MODEL["cost_in_1m"]
+        + tok_out / 1000000 * SELECTED_MODEL["cost_out_1m"]
+    )
 
     # ???
     return response.output_parsed
+
+
+def get_pdf_slice_as_data(reader, first_page=None, last_page=None):
+    with tempfile.TemporaryFile() as f:
+        writer = PdfWriter()
+        i = first_page if first_page else 0
+        limit = last_page if last_page else len(reader.pages) - 1
+        # inclusive, 0-indexed
+        while i <= limit:
+            writer.add_page(reader.pages[i])
+            i += 1
+        writer.write(f)
+        f.seek(0)
+        return f.read()
 
 
 def parse_pdf_metadata(fpath, last_page):
@@ -368,6 +399,79 @@ def apply_pdf_toc(fpath, toc):
     writer.write(fpath)
 
 
+def parse_pdf_index_naive(reader, first_page):
+    page_count = len(reader.pages)
+    data = get_pdf_slice_as_data(reader, first_page)
+    data_b64 = base64.b64encode(data).decode("utf-8")
+    file_data = {"fname": fpath.name, "data_b64": data_b64}
+
+    message = (
+        "Extract the  index from the  provided pages  of the book.  Format your"
+        " response as  a json  object, where  key 'entries' is  a list  of index"
+        " entries. Index  entries are also json  objects, where key 'name'  is a"
+        " string with the name of the entry  and key 'page_numbers' is a list of"
+        " integers corresponding to the provided page numbers for that entry."
+        " If an  index entry has sub-entries,  propagate the name of  the parent"
+        " entry across  the sub-entries  and save  each sub  entry individually,"
+        " with its  page numbers.  For example,  the entry  'Kolmogorov's' might"
+        " have sub-entries  'continuity criterion  357', 'cycle  condition 298',"
+        " 'maximal inequality 79',  etc, each with their own  page numbers. Save"
+        " entries 'Kolmogorov's  continuity criterion  357', etc. If  the parent"
+        " entry has its own page number,  save the parent entry by itself, also."
+        " For  example, the  entry 'Cauchy-Schwarz  inequality 105'  may have  a"
+        " typeset  child  'conditional  179'.  Then  save  both  'Cauchy-Schwarz"
+        " inequality  105'  and  'Cauchy-Schwarz  inequality  conditional  179'."
+        " Determine whether an entry has sub-entries by examining their relative"
+        " type-setting."
+    )
+
+    output = llm_helpful_assistant(
+        message,
+        reasoning="medium",
+        media_type="file",
+        media_data=file_data,
+        response_format=ParsedPDFIndex,
+    )
+
+    return output
+
+
+def parse_pdf_index(fpath, first_page, do_entry_adjustment, page_offset=None):
+    reader = PdfReader(fpath)
+    index = parse_pdf_index_naive(reader, first_page)
+
+    flat_index = ParsedPDFIndex(entries=[])
+    for entry in index.entries:
+        name = entry.name
+        dupe_entries = len(entry.page_numbers) > 1
+
+        i = 1
+        for pnum in entry.page_numbers:
+            flat_entry = ParsedPDFIndexFlatEntry(
+                name=f"{name} ({i})" if dupe_entries else name,
+                page_number=pnum
+            )
+            flat_index.entries.append(flat_entry)
+            i += 1
+
+    # if do_entry_adjustment:
+    #     # hypothetically, do entry-by-entry adjustment like with TOC
+    #     pass
+    # else:
+    for entry in flat_index.entries:
+        entry.page_number += page_offset
+
+    return flat_index
+
+
+def print_index(index, fpath):
+    with open(fpath, "w") as f:
+        for entry in index.entries:
+            name = entry.name
+            pnum = entry.page_number
+            f.write(f"{pnum} {name}\n")
+
+
 def main():
     global args, fpath
     parser = argparse.ArgumentParser("autopdf")
@@ -387,6 +491,16 @@ def main():
     )
     parser.add_argument("--make-toc-adjust-with-file", action="store_true")
     parser.add_argument("--make-toc-force", action="store_true")
+    parser.add_argument(
+        "--parse-index--first-page",
+        type=int,
+        default=-25,
+        help="first page to consider in extracting index, 1-indexed",
+    )
+    parser.add_argument("--parse-index--output")
+    # This should be the 1-indexed physical page of book page 1, minus 1.
+    parser.add_argument("--parse-index--do-entry-adjustment", action="store_true")
+    parser.add_argument("--parse-index--page-offset", type=int)
     args = parser.parse_args()
 
     for fpath in args.fpath:
@@ -411,6 +525,26 @@ def main():
                 fpath, reader, adjust_with_file=args.make_toc_adjust_with_file
             )
             apply_pdf_toc(fpath, toc)
+        elif args.cmd == "parse-index":
+            if (not args.parse_index__page_offset) and (
+                not args.parse_index__do_entry_adjustment
+            ):
+                err(
+                    f"Must provide either --parse-index--page-offset or --parse-index--do-entry-adjustment"
+                )
+
+            index = parse_pdf_index(
+                fpath,
+                args.parse_index__first_page - 1,
+                args.parse_index__do_entry_adjustment,
+                page_offset=args.parse_index__page_offset,
+            )
+
+            if args.parse_index__output:
+                index_fpath = args.parse_index_output
+            else:
+                index_fpath = f"{fpath}.apindex"
+            print_index(index, index_fpath)
         else:
             err(f"Unknown cmd {args.cmd}")
 
@@ -432,3 +566,6 @@ if __name__ == "__main__":
 #   physical page confirmation procedure.
 # - Close TOC by default in firefox?
 # - Ignore descriptive subheadings in frontmatter TOCs
+# - A lot of problems would be solved by simply having an correspondence of book
+#   pnums  to physical  pnums. This  would need  to be  stored in  some kind  of
+#   system-wide database.
