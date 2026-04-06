@@ -20,8 +20,12 @@ from pypdf import PdfReader, PdfWriter
 from pydantic import BaseModel
 
 
+GPT_5_4_NANO = {"id": "gpt-5.4-nano", "cost_in_1m": 0.2, "cost_out_1m": 1.25}
+SELECTED_MODEL = GPT_5_4_NANO
+
 args = None
 fpath = None
+usage = {"tok_in": 0, "tok_out": 0, "est_cost": 0}
 
 
 class ParsedPDFMetadata(BaseModel):
@@ -78,7 +82,7 @@ def llm_helpful_assistant(
     # I have no idea  what this api is. It's not in the  api reference, but it's
     # in the structured outputs page: https://developers.openai.com/api/docs/guides/structured-outputs
     response = client.responses.parse(
-        model="gpt-5.4-nano",
+        model=SELECTED_MODEL["id"],
         reasoning={"effort": reasoning},
         text_format=response_format,
         input=[
@@ -88,6 +92,12 @@ def llm_helpful_assistant(
             }
         ],
     )
+
+    tok_in = response.usage.input_tokens
+    tok_out = response.usage.output_tokens
+    usage["tok_in"] += tok_in
+    usage["tok_out"] += tok_out
+    usage["est_cost"] += tok_in/1000000 * SELECTED_MODEL["cost_in_1m"] + tok_out/1000000 * SELECTED_MODEL["cost_out_1m"]
 
     # ???
     return response.output_parsed
@@ -404,6 +414,10 @@ def main():
         else:
             err(f"Unknown cmd {args.cmd}")
 
+    print(
+        f"Total usage: tokens in: {usage['tok_in']}, tokens out: {usage['tok_out']}, est cost: ${usage['est_cost']}"
+    )
+
 
 if __name__ == "__main__":
     main()
@@ -420,9 +434,4 @@ if __name__ == "__main__":
 # - Index extraction would be really cool. Parse out the index, and run the same
 #   physical page confirmation procedure.
 # - Close TOC by default in firefox?
-
-
-
-
-
-
+# - Ignore descriptive subheadings in frontmatter TOCs
