@@ -256,7 +256,7 @@ def confirm_section_pagenum(section, page_data, data_type):
 
 
 def adjust_section_pagenum(section, file_data, physical_offset, with_file=False):
-    MAX_TRIES = 31  # radius 15
+    MAX_TRIES = 21  # radius 15
     page_idxs = list(range(len(file_data.pages if with_file else file_data)))
     page_idxs.reverse()
 
@@ -419,7 +419,7 @@ if __name__ == "__main__":
 # - Numbered section titles in the outline
 # - Index extraction would be really cool. Parse out the index, and run the same
 #   physical page confirmation procedure.
-
+# - Close TOC by default in firefox?
 
 
 
