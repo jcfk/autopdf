@@ -376,7 +376,7 @@ def main():
     parser.add_argument(
         "--rename-last-page",
         type=int,
-        default=4,
+        default=9,
         help="extract metadata from up to this page, 0-indexed",
     )
     parser.add_argument(
