@@ -417,3 +417,12 @@ if __name__ == "__main__":
 # - Heuristic: increase reasoning level and try close ones in confirmation again
 #   if getting real far away.
 # - Numbered section titles in the outline
+# - Index extraction would be really cool. Parse out the index, and run the same
+#   physical page confirmation procedure.
+
+
+
+
+
+
+
