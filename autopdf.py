@@ -425,9 +425,8 @@ if __name__ == "__main__":
 
 # TODO:
 # - Try higher reasoning with the naive method?
-# - Allow configuring between img and file use in confirmation.
 # - Output messages in stderr
-# - Track expenses at end and if cancelled
+# - Output expenses even if cancelled
 # - Numbered section titles in the outline
 # - Index extraction would be really cool. Parse out the index, and run the same
 #   physical page confirmation procedure.
