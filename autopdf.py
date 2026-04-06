@@ -389,7 +389,7 @@ def main():
                 print()
                 continue
 
-            new_fpath = rename_pdf(fpath, metadata)
+            new_fpath = rename_pdf(fpath, parsed_metadata)
         elif args.cmd == "make-toc":
             reader = PdfReader(fpath)
             if len(reader.outline) > 0 and not args.make_toc_force:
