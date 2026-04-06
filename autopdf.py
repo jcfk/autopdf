@@ -428,8 +428,6 @@ if __name__ == "__main__":
 # - Allow configuring between img and file use in confirmation.
 # - Output messages in stderr
 # - Track expenses at end and if cancelled
-# - Heuristic: increase reasoning level and try close ones in confirmation again
-#   if getting real far away.
 # - Numbered section titles in the outline
 # - Index extraction would be really cool. Parse out the index, and run the same
 #   physical page confirmation procedure.
