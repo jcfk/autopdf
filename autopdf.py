@@ -483,7 +483,7 @@ def parse_pdf_index(fpath, read_from_pidx, val_method, page_offset, pnum_db_fpat
     return flat_index
 
 
-def print_index(index, fpath):
+def save_index(index, fpath):
     with open(fpath, "w") as f:
         for entry in index.entries:
             name = entry.name
@@ -562,6 +562,7 @@ def main():
     parser = argparse.ArgumentParser("autopdf")
     parser.add_argument("cmd")
     parser.add_argument("fpath", nargs="+")
+    parser.add_argument("--autopdf-dir", type=Path, required=True)
 
     # rename
     parser.add_argument(
@@ -652,12 +653,12 @@ def main():
             )
 
             index_fpath = f"{fpath}.index.autopdf"
-            print_index(index, index_fpath)
+            save_index(index, args.autopdf_dir / index_fpath)
         elif args.cmd == "make-pagenum-db":
             pdf_page_to_book_page = parse_pagenums(fpath)
 
             db_fpath = f"{fpath}.pagenum_db.autopdf"
-            save_pagenum_db(pdf_page_to_book_page, db_fpath)
+            save_pagenum_db(pdf_page_to_book_page, args.autopdf_dir / db_fpath)
         else:
             err(f"Unknown cmd {args.cmd}")
 
