@@ -682,10 +682,6 @@ if __name__ == "__main__":
 # - Output messages in stderr
 # - Output expenses even if cancelled
 # - Numbered section titles in the outline
-# - Index extraction would be really cool. Parse out the index, and run the same
-#   physical page confirmation procedure.
 # - Close TOC by default in firefox?
 # - Ignore descriptive subheadings in frontmatter TOCs
-# - A lot of problems would be solved by simply having an correspondence of book
-#   pnums  to physical  pnums. This  would need  to be  stored in  some kind  of
-#   system-wide database.
+# - True subcommand argparse
