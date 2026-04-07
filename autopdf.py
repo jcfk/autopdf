@@ -126,28 +126,15 @@ def llm_helpful_assistant(
     return response.output_parsed
 
 
-def get_pdf_slice_as_data(reader, first_page=None, last_page=None):
+def get_pdf_slice_as_file_data(reader, first_pidx=None, last_pidx=None):
     with tempfile.TemporaryFile() as f:
         writer = PdfWriter()
-        i = first_page if first_page is not None else 0
-        limit = last_page if last_page is not None else len(reader.pages) - 1
-        # inclusive, 0-indexed
-        pages = reader.pages[i : limit + 1]
+        i1 = 0 if first_pidx is None else first_pidx
+        i2 = len(reader.pages) - 1 if last_pidx is None else last_pidx
+
+        pages = reader.pages[i1 : i2 + 1]
         for page in pages:
             writer.add_page(page)
-        writer.write(f)
-        f.seek(0)
-        # breakpoint()
-        return f.read(), len(pages)
-
-
-def parse_pdf_metadata(fpath, last_page):
-    # with temp pdf
-    with tempfile.TemporaryFile() as f:
-        reader = PdfReader(fpath)
-        writer = PdfWriter()
-        for i in range(min(len(reader.pages), last_page)):
-            writer.add_page(reader.pages[i])
         writer.write(f)
 
         f.seek(0)
@@ -155,33 +142,42 @@ def parse_pdf_metadata(fpath, last_page):
         data_b64 = base64.b64encode(data).decode("utf-8")
         file_data = {"fname": fpath.name, "data_b64": data_b64}
 
-        message = (
-            "Detect the metadata  for year, title, and author  surnames from the"
-            " following text of the first pages of an academic paper or book."
-            " Format your  response as a  json object,  where 'year' is  an int,"
-            " 'title' is a  string, 'authors' is a list of  surname strings, and"
-            " 'error' is a boolean  that is true if and only  if the task cannot"
-            " be completed. Return error if the document does not possess all"
-            " three fields."
-            " The title  should be normalized  if necessary. That means,  if the"
-            " title is in all caps in the pdf, capitalization should be adjusted"
-            " to   standard   titlecase.   Capitalized   acronyms   may   remain"
-            " capitalized. Retain necessary formatting  elements like colons and"
-            " commas."
-            " The author list should include surnames in the order in which they"
-            " appear  in the  document.  The first  author's  surname should  be"
-            " first. The same normalization rules apply to author surnames."
-            f" You may take into account the file name, which is '{fpath.name}'."
-        )
+        return file_data, len(pages)
 
-        output = llm_helpful_assistant(
-            message,
-            media_type="file",
-            media_data=file_data,
-            response_format=ParsedPDFMetadata,
-        )
 
-        return output
+def parse_pdf_metadata(fpath, up_to_pidx):
+    reader = PdfReader(fpath)
+    file_data, _ = get_pdf_slice_as_file_data(
+        reader, first_pidx=None, last_pidx=up_to_pidx
+    )
+
+    message = (
+        "Detect the metadata  for year, title, and author  surnames from the"
+        " following text of the first pages of an academic paper or book."
+        " Format your  response as a  json object,  where 'year' is  an int,"
+        " 'title' is a  string, 'authors' is a list of  surname strings, and"
+        " 'error' is a boolean  that is true if and only  if the task cannot"
+        " be completed. Return error if the document does not possess all"
+        " three fields."
+        " The title  should be normalized  if necessary. That means,  if the"
+        " title is in all caps in the pdf, capitalization should be adjusted"
+        " to   standard   titlecase.   Capitalized   acronyms   may   remain"
+        " capitalized. Retain necessary formatting  elements like colons and"
+        " commas."
+        " The author list should include surnames in the order in which they"
+        " appear  in the  document.  The first  author's  surname should  be"
+        " first. The same normalization rules apply to author surnames."
+        f" You may take into account the file name, which is '{fpath.name}'."
+    )
+
+    output = llm_helpful_assistant(
+        message,
+        media_type="file",
+        media_data=file_data,
+        response_format=ParsedPDFMetadata,
+    )
+
+    return output
 
 
 def rename_pdf(fpath, metadata):
@@ -197,27 +193,14 @@ def rename_pdf(fpath, metadata):
 
     if not new_fpath.exists():
         fpath.rename(new_fpath)
-        print(f"Renamed {fpath}")
-        print(f"    --> {new_fpath}")
-        print()
+
+    return new_fpath
 
 
-def parse_pdf_toc_naive(fpath):
-    with tempfile.TemporaryFile() as f:
-        reader = PdfReader(fpath)
-        writer = PdfWriter()
-        if args.make_toc_last_page:
-            for i in range(min(len(reader.pages), args.make_toc_last_page)):
-                writer.add_page(reader.pages[i])
-        else:
-            writer.append_pages_from_reader(reader)
-        writer.write(f)
-
-        f.seek(0)
-        data = f.read()
-
-    data_b64 = base64.b64encode(data).decode("utf-8")
-    file_data = {"fname": fpath.name, "data_b64": data_b64}
+def parse_pdf_toc_naive(reader, up_to_pidx):
+    file_data, _ = get_pdf_slice_as_file_data(
+        reader, first_pidx=None, last_pidx=up_to_pidx
+    )
 
     message = (
         "Parse the table of contents of the PDF, which may be an academic paper"
@@ -303,9 +286,9 @@ def confirm_section_pagenum(section, page_data, data_type):
     return output.confirmed
 
 
-def adjust_section_pagenum(section, file_data, physical_offset, with_file=False):
+def adjust_section_pagenum(section, physical_offset, file_data_type, file_data):
     MAX_TRIES = 21  # radius 15
-    page_idxs = list(range(len(file_data.pages if with_file else file_data)))
+    page_idxs = list(range(len(file_data)))
     page_idxs.reverse()
 
     # Note section.pagenum is probably 1-indexed
@@ -322,10 +305,8 @@ def adjust_section_pagenum(section, file_data, physical_offset, with_file=False)
 
         confirmed = confirm_section_pagenum(
             section,
-            file_data.pages[current_search_i]
-            if with_file
-            else file_data[current_search_i],
-            data_type=("file" if with_file else "img"),
+            file_data[current_search_i],
+            file_data_type,
         )
         tries += 1
 
@@ -340,12 +321,11 @@ def adjust_section_pagenum(section, file_data, physical_offset, with_file=False)
     return False, physical_offset
 
 
-def parse_pdf_toc(fpath, reader, adjust_with_file=False):
-    toc = parse_pdf_toc_naive(fpath)
+def parse_pdf_toc(reader, up_to_pidx, val_method, images=None):
+    toc = parse_pdf_toc_naive(reader, up_to_pidx)
     print("Preliminary naive toc:")
     pprint_toc(toc)
 
-    # Adjust page numbers
     def flatten_toc(sections):
         flat_toc = []
         for section in sections:
@@ -356,21 +336,37 @@ def parse_pdf_toc(fpath, reader, adjust_with_file=False):
 
     flat_naive_toc = flatten_toc(toc.sections)
 
-    if not adjust_with_file:
-        pdf_images = pdf2image.convert_from_path(fpath)
+    # Validate TOC elements
+    if val_method in ["radial-adjust-by-file", "radial-adjust-by-img"]:
+        if val_method == "radial-adjust-by-file":
+            file_data_type = "file"
+            file_data = reader.pages
+        elif val_method == "radial-adjust-by-img":
+            file_data_type = "img"
+            file_data = images
 
-    current_physical_offset = 0
-    for section in flat_naive_toc:
-        confirmed, current_physical_offset = adjust_section_pagenum(
-            section,
-            reader if adjust_with_file else pdf_images,
-            current_physical_offset,
-            with_file=adjust_with_file,
-        )
-        if confirmed:
-            print(f"Confirmed section {section.title} (at page {section.pagenum + 1})")
-        else:
-            print(f"Could not find section {section.title}")
+        current_physical_offset = 0
+        for section in flat_naive_toc:
+            confirmed, current_physical_offset = adjust_section_pagenum(
+                section,
+                current_physical_offset,
+                file_data_type,
+                file_data,
+            )
+            if confirmed:
+                print(
+                    f"Confirmed section {section.title} (at page {section.pagenum + 1})"
+                )
+            else:
+                print(f"Could not find section {section.title}")
+    elif args.make_toc__val_method == "pagenum-db":
+        # TODO
+        pass
+    elif args.make_toc__val_method == "pagenum-offset":
+        # TODO
+        pass
+    else:
+        err(f'Unknown argument "{args.make_toc__val_method}"to --make-toc--val-method')
 
     return toc
 
@@ -406,11 +402,8 @@ def apply_pdf_toc(fpath, toc):
     writer.write(fpath)
 
 
-def parse_pdf_index_naive(reader, first_page):
-    page_count = len(reader.pages)
-    data, _ = get_pdf_slice_as_data(reader, first_page)
-    data_b64 = base64.b64encode(data).decode("utf-8")
-    file_data = {"fname": fpath.name, "data_b64": data_b64}
+def parse_pdf_index_naive(reader, read_from_pidx):
+    file_data, _ = get_pdf_slice_as_file_data(reader, read_from_pidx)
 
     message = (
         "Extract the  index from the  provided pages  of the book.  Format your"
@@ -453,17 +446,15 @@ def read_pagenum_db(fpath):
             try:
                 book_pnum = int(book_pnum)
                 book_pnum_to_pdf_pnum[book_pnum] = pdf_pnum
-            except:
+            except Exception:
                 pass
 
         return book_pnum_to_pdf_pnum
 
 
-def parse_pdf_index(
-    fpath, first_page, validation_method, page_offset=None, pnum_db_fpath=None
-):
+def parse_pdf_index(fpath, read_from_pidx, val_method, page_offset, pnum_db_fpath):
     reader = PdfReader(fpath)
-    index = parse_pdf_index_naive(reader, first_page)
+    index = parse_pdf_index_naive(reader, read_from_pidx)
 
     flat_index = ParsedPDFIndex(entries=[])
     for entry in index.entries:
@@ -478,12 +469,13 @@ def parse_pdf_index(
             flat_index.entries.append(flat_entry)
             i += 1
 
-    if validation_method == "radial_adjust":
+    if val_method == "radial-adjust":
+        # TODO
         pass
-    elif validation_method == "naive_offset":
+    elif val_method == "pagenum-offset":
         for entry in flat_index.entries:
             entry.page_number += page_offset
-    elif validation_method == "pagenum_db":
+    elif val_method == "pagenum-db":
         db = read_pagenum_db(pnum_db_fpath)
         for entry in flat_index.entries:
             entry.page_number = db[entry.page_number]
@@ -507,12 +499,9 @@ def parse_pagenums(fpath):
 
     # expected_book_pnum = 0
     for i in range(0, len(reader.pages), BATCH_SIZE_LIMIT):
-        data, batch_size = get_pdf_slice_as_data(
-            reader, first_page=i, last_page=i + BATCH_SIZE_LIMIT - 1
+        file_data, batch_size = get_pdf_slice_as_file_data(
+            reader, first_pidx=i, last_pidx=i + BATCH_SIZE_LIMIT - 1
         )
-        data_b64 = base64.b64encode(data).decode("utf-8")
-        file_data = {"fname": fpath.name, "data_b64": data_b64}
-
         pdf_pnums = [i + d + 1 for d in range(batch_size)]
 
         message = (
@@ -573,83 +562,101 @@ def main():
     parser = argparse.ArgumentParser("autopdf")
     parser.add_argument("cmd")
     parser.add_argument("fpath", nargs="+")
+
+    # rename
     parser.add_argument(
-        "--rename-last-page",
+        "--rename--read-up-to",
         type=int,
-        default=9,
-        help="extract metadata from up to this page, 0-indexed",
+        default=10,
+        help="extract metadata from up to this PDF pagenum, inclusive",
+    )
+
+    # make-toc
+    parser.add_argument(
+        "--make-toc--read-up-to",
+        type=int,
+        help="parse frontmatter for TOC up to this PDF pagenum, inclusive",
     )
     parser.add_argument(
-        "--make-toc-last-page",
-        type=int,
-        default=None,
-        help="parse frontmatter for toc up to this page, 1-indexed",
+        "--make-toc--force", action="store_true", help="overwrite any existing TOC"
     )
-    parser.add_argument("--make-toc-adjust-with-file", action="store_true")
-    parser.add_argument("--make-toc-force", action="store_true")
+    parser.add_argument("--make-toc--val-method")
+
+    # parse-index
     parser.add_argument(
-        "--parse-index--first-page",
+        "--parse-index--read-from",
         type=int,
         default=-25,
-        help="first page to consider in extracting index, 1-indexed",
+        help="extract index from this PDF pagenum and on",
     )
-    parser.add_argument("--parse-index--output")
+    parser.add_argument("--parse-index--val-method")
     # This should be the 1-indexed physical page of book page 1, minus 1.
-    parser.add_argument("--parse-index--validation-method")
     parser.add_argument("--parse-index--page-offset", type=int)
     parser.add_argument("--parse-index--pagenum-db")
-    parser.add_argument("--make-pagenum-db--output")
-    args = parser.parse_args()
 
+    # make-pagenum-db
+
+    args = parser.parse_args()
     start_time = time.time()
 
     for fpath in args.fpath:
         fpath = Path(fpath)
 
         if args.cmd == "rename":
-            parsed_metadata = parse_pdf_metadata(fpath, last_page=args.rename_last_page)
+            parsed_metadata = parse_pdf_metadata(fpath, args.rename__read_up_to - 1)
             if parsed_metadata.error:
                 print(f"Error processing {fpath}; skipping")
                 print()
                 continue
 
             new_fpath = rename_pdf(fpath, parsed_metadata)
+            print(f"Renamed {fpath}")
+            print(f"    --> {new_fpath}")
+            print()
         elif args.cmd == "make-toc":
             reader = PdfReader(fpath)
-            if len(reader.outline) > 0 and not args.make_toc_force:
+            if len(reader.outline) > 0 and not args.make_toc__force:
                 print(f"PDF has TOC (use --force): {fpath}; skipping")
                 print()
                 continue
 
-            toc = parse_pdf_toc(
-                fpath, reader, adjust_with_file=args.make_toc_adjust_with_file
-            )
+            if not args.make_toc__val_method:
+                err("Must provide --make-toc--val-method")
+
+            if args.make_toc__val_method == "radial-ajust-by-img":
+                images = pdf2image.convert_from_path(fpath)
+                toc = parse_pdf_toc(
+                    reader,
+                    args.make_toc__read_up_to - 1,
+                    args.make_toc__val_method,
+                    images=images,
+                )
+            else:
+                toc = parse_pdf_toc(
+                    reader,
+                    args.make_toc__read_up_to - 1,
+                    args.make_toc__val_method,
+                )
+
             apply_pdf_toc(fpath, toc)
         elif args.cmd == "parse-index":
-            # TODO also allow user to provide --parse-index--pagenum-db
-            if not args.parse_index__validation_method:
-                err(f"Must provide --parse-index--validation-method")
+            if not args.parse_index__val_method:
+                err("Must provide --parse-index--val-method")
 
             index = parse_pdf_index(
                 fpath,
-                args.parse_index__first_page - 1,
-                args.parse_index__validation_method,
-                page_offset=args.parse_index__page_offset,
-                pnum_db_fpath=args.parse_index__pagenum_db,
+                args.parse_index__read_from - 1,
+                args.parse_index__val_method,
+                args.parse_index__page_offset,
+                args.parse_index__pagenum_db,
             )
 
-            if args.parse_index__output:
-                index_fpath = args.parse_index_output
-            else:
-                index_fpath = f"{fpath}.index.autopdf"
+            index_fpath = f"{fpath}.index.autopdf"
             print_index(index, index_fpath)
         elif args.cmd == "make-pagenum-db":
             pdf_page_to_book_page = parse_pagenums(fpath)
 
-            if args.make_pagenum_db__output:
-                db_fpath = args.make_pagenum_db__output
-            else:
-                db_fpath = f"{fpath}.pagenum_db.autopdf"
+            db_fpath = f"{fpath}.pagenum_db.autopdf"
             save_pagenum_db(pdf_page_to_book_page, db_fpath)
         else:
             err(f"Unknown cmd {args.cmd}")
