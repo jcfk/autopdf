@@ -452,7 +452,7 @@ def read_pagenum_db(fpath):
         return book_pnum_to_pdf_pnum
 
 
-def parse_pdf_index(fpath, read_from_pidx, val_method, page_offset, pnum_db_fpath):
+def parse_pdf_index(fpath, read_from_pidx, val_method, page_offset):
     reader = PdfReader(fpath)
     index = parse_pdf_index_naive(reader, read_from_pidx)
 
@@ -476,7 +476,7 @@ def parse_pdf_index(fpath, read_from_pidx, val_method, page_offset, pnum_db_fpat
         for entry in flat_index.entries:
             entry.page_number += page_offset
     elif val_method == "pagenum-db":
-        db = read_pagenum_db(pnum_db_fpath)
+        db = read_pagenum_db(args.autopdf_dir / f"{fpath}.pagenum_db.autopdf")
         for entry in flat_index.entries:
             entry.page_number = db[entry.page_number]
 
@@ -540,9 +540,9 @@ def parse_pagenums(fpath):
 
         for pdf_pnum, book_pnum in zip(pdf_pnums, output.pagenums):
             if book_pnum is not None:
-                print(f"PDF page {pdf_pnum}, found page number {book_pnum}")
+                print(f"PDF page number {pdf_pnum}, found book page number {book_pnum}")
             else:
-                print(f"PDF page {pdf_pnum}, found page number {book_pnum}")
+                print(f"PDF page number {pdf_pnum}, found no book page number")
             pdf_page_to_book_page.append((pdf_pnum, book_pnum))
 
         # if book_pnum != expected_book_pnum:
@@ -599,7 +599,6 @@ def main():
     parse_index_parser.add_argument("--val-method")
     # This should be the 1-indexed physical page of book page 1, minus 1.
     parse_index_parser.add_argument("--page-offset", type=int)
-    parse_index_parser.add_argument("--pagenum-db")
 
     # make-pagenum-db
     make_pagenum_db_parser = subparsers.add_parser("make-pagenum-db")
@@ -656,8 +655,7 @@ def main():
                 fpath,
                 args.read_from - 1,
                 args.val_method,
-                args.page_offset,
-                args.pagenum_db,
+                args.page_offset
             )
 
             index_fpath = f"{fpath}.index.autopdf"
@@ -688,4 +686,6 @@ if __name__ == "__main__":
 # - Numbered section titles in the outline
 # - Close TOC by default in firefox?
 # - Ignore descriptive subheadings in frontmatter TOCs
-# - True subcommand argparse
+# - Fix bookmarks that  show children by default in firefox.  Fix bookmarks that
+#   automatically fit page width.
+# - Do not assume fpaths are basenames
