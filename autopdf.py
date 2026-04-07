@@ -359,14 +359,14 @@ def parse_pdf_toc(reader, up_to_pidx, val_method, images=None):
                 )
             else:
                 print(f"Could not find section {section.title}")
-    elif args.make_toc__val_method == "pagenum-db":
+    elif args.val_method == "pagenum-db":
         # TODO
         pass
-    elif args.make_toc__val_method == "pagenum-offset":
+    elif args.val_method == "pagenum-offset":
         # TODO
         pass
     else:
-        err(f'Unknown argument "{args.make_toc__val_method}"to --make-toc--val-method')
+        err(f'Unknown argument "{args.val_method}"to --make-toc--val-method')
 
     return toc
 
@@ -490,7 +490,7 @@ def save_index(index, fpath):
             pnum = entry.page_number
             f.write(f"{pnum} {name}\n")
 
-    print(f"Saved AutoPDF index to \"{fpath}\"")
+    print(f'Saved AutoPDF index to "{fpath}"')
 
 
 def parse_pagenums(fpath):
@@ -558,48 +558,52 @@ def save_pagenum_db(pdf_page_to_book_page, fpath):
         for pdf_pnum, book_pnum in pdf_page_to_book_page:
             f.write(f"{pdf_pnum} {book_pnum}\n")
 
-    print(f"Saved AutoPDF pagenum db to \"{fpath}\"")
+    print(f'Saved AutoPDF pagenum db to "{fpath}"')
 
 
 def main():
     global args, fpath
     parser = argparse.ArgumentParser("autopdf")
-    parser.add_argument("cmd")
-    parser.add_argument("fpath", nargs="+")
     parser.add_argument("--autopdf-dir", type=Path, required=True)
+    subparsers = parser.add_subparsers(dest="cmd")
 
-    # rename
-    parser.add_argument(
-        "--rename--read-up-to",
+    rename_parser = subparsers.add_parser("rename")
+    rename_parser.add_argument("fpath", nargs="+")
+    rename_parser.add_argument(
+        "--read-up-to",
         type=int,
         default=10,
         help="extract metadata from up to this PDF pagenum, inclusive",
     )
 
-    # make-toc
-    parser.add_argument(
-        "--make-toc--read-up-to",
+    make_toc_parser = subparsers.add_parser("make-toc")
+    make_toc_parser.add_argument("fpath", nargs="+")
+    make_toc_parser.add_argument(
+        "--read-up-to",
         type=int,
         help="parse frontmatter for TOC up to this PDF pagenum, inclusive",
     )
-    parser.add_argument(
-        "--make-toc--force", action="store_true", help="overwrite any existing TOC"
+    make_toc_parser.add_argument(
+        "--force", action="store_true", help="overwrite any existing TOC"
     )
-    parser.add_argument("--make-toc--val-method")
+    make_toc_parser.add_argument("--val-method")
 
-    # parse-index
-    parser.add_argument(
-        "--parse-index--read-from",
+    parse_index_parser = subparsers.add_parser("parse-index")
+    parse_index_parser.add_argument("fpath", nargs="+")
+    parse_index_parser.add_argument(
+        "--read-from",
         type=int,
         default=-25,
         help="extract index from this PDF pagenum and on",
     )
-    parser.add_argument("--parse-index--val-method")
+    parse_index_parser.add_argument("--val-method")
     # This should be the 1-indexed physical page of book page 1, minus 1.
-    parser.add_argument("--parse-index--page-offset", type=int)
-    parser.add_argument("--parse-index--pagenum-db")
+    parse_index_parser.add_argument("--page-offset", type=int)
+    parse_index_parser.add_argument("--pagenum-db")
 
     # make-pagenum-db
+    make_pagenum_db_parser = subparsers.add_parser("make-pagenum-db")
+    make_pagenum_db_parser.add_argument("fpath", nargs="+")
 
     args = parser.parse_args()
     start_time = time.time()
@@ -608,7 +612,7 @@ def main():
         fpath = Path(fpath)
 
         if args.cmd == "rename":
-            parsed_metadata = parse_pdf_metadata(fpath, args.rename__read_up_to - 1)
+            parsed_metadata = parse_pdf_metadata(fpath, args.read_up_to - 1)
             if parsed_metadata.error:
                 print(f"Error processing {fpath}; skipping")
                 print()
@@ -620,40 +624,40 @@ def main():
             print()
         elif args.cmd == "make-toc":
             reader = PdfReader(fpath)
-            if len(reader.outline) > 0 and not args.make_toc__force:
+            if len(reader.outline) > 0 and not args.force:
                 print(f"PDF has TOC (use --force): {fpath}; skipping")
                 print()
                 continue
 
-            if not args.make_toc__val_method:
+            if not args.val_method:
                 err("Must provide --make-toc--val-method")
 
-            if args.make_toc__val_method == "radial-ajust-by-img":
+            if args.val_method == "radial-ajust-by-img":
                 images = pdf2image.convert_from_path(fpath)
                 toc = parse_pdf_toc(
                     reader,
-                    args.make_toc__read_up_to - 1,
-                    args.make_toc__val_method,
+                    args.read_up_to - 1,
+                    args.val_method,
                     images=images,
                 )
             else:
                 toc = parse_pdf_toc(
                     reader,
-                    args.make_toc__read_up_to - 1,
-                    args.make_toc__val_method,
+                    args.read_up_to - 1,
+                    args.val_method,
                 )
 
             apply_pdf_toc(fpath, toc)
         elif args.cmd == "parse-index":
-            if not args.parse_index__val_method:
+            if not args.val_method:
                 err("Must provide --parse-index--val-method")
 
             index = parse_pdf_index(
                 fpath,
-                args.parse_index__read_from - 1,
-                args.parse_index__val_method,
-                args.parse_index__page_offset,
-                args.parse_index__pagenum_db,
+                args.read_from - 1,
+                args.val_method,
+                args.page_offset,
+                args.pagenum_db,
             )
 
             index_fpath = f"{fpath}.index.autopdf"
