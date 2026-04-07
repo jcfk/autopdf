@@ -29,6 +29,7 @@ usage = {"tok_in": 0, "tok_out": 0, "est_cost": 0}
 
 
 class ParsedPDFMetadata(BaseModel):
+    # TODO the first three should be optional
     year: int
     title: str
     author_surnames: list[str]
@@ -61,6 +62,11 @@ class ParsedPDFIndexEntry(BaseModel):
 
 class ParsedPDFIndex(BaseModel):
     entries: list[ParsedPDFIndexEntry]
+
+
+class ParsedPDFPageNumber(BaseModel):
+    pagenum: int | None
+    error: bool
 
 
 def err(msg=None):
@@ -123,14 +129,15 @@ def llm_helpful_assistant(
 def get_pdf_slice_as_data(reader, first_page=None, last_page=None):
     with tempfile.TemporaryFile() as f:
         writer = PdfWriter()
-        i = first_page if first_page else 0
-        limit = last_page if last_page else len(reader.pages) - 1
+        i = first_page if first_page is not None else 0
+        limit = last_page if last_page is not None else len(reader.pages) - 1
         # inclusive, 0-indexed
         while i <= limit:
             writer.add_page(reader.pages[i])
             i += 1
         writer.write(f)
         f.seek(0)
+        # breakpoint()
         return f.read()
 
 
@@ -310,7 +317,7 @@ def adjust_section_pagenum(section, file_data, physical_offset, with_file=False)
         page_idxs.remove(current_search_i)
 
         print(
-            f"Testing for section {section.title} (pagenum: {section.pagenum}) at pagenum {current_search_i + 1}"
+            f"Testing for section \"{section.title}\" (pagenum: {section.pagenum}) at pagenum {current_search_i + 1}"
         )
 
         confirmed = confirm_section_pagenum(
@@ -448,8 +455,7 @@ def parse_pdf_index(fpath, first_page, do_entry_adjustment, page_offset=None):
         i = 1
         for pnum in entry.page_numbers:
             flat_entry = ParsedPDFIndexFlatEntry(
-                name=f"{name} ({i})" if dupe_entries else name,
-                page_number=pnum
+                name=f"{name} ({i})" if dupe_entries else name, page_number=pnum
             )
             flat_index.entries.append(flat_entry)
             i += 1
@@ -470,6 +476,61 @@ def print_index(index, fpath):
             name = entry.name
             pnum = entry.page_number
             f.write(f"{pnum} {name}\n")
+
+
+def parse_pagenums(fpath):
+    reader = PdfReader(fpath)
+    book_page_to_pdf_page = []
+
+    expected_book_pnum = 0
+    for i in range(len(reader.pages)):
+        pdf_pnum = i + 1
+        data = get_pdf_slice_as_data(reader, first_page=i, last_page=i)
+        data_b64 = base64.b64encode(data).decode("utf-8")
+        file_data = {"fname": fpath.name, "data_b64": data_b64}
+
+        message = (
+            "Extract the integer page number from  the provided book page."
+            " Format your response  as a json object, where the  key 'pagenum' is an"
+            " integer with  the book page number,  and the key 'error'  is a boolean"
+            " that is true if  and only if no integer page  number can be extracted,"
+            " for example  when there  is no page  number shown, or  if the  page is"
+            " numbered in roman numerals or another non-integer scheme."
+            # " You  may  take  into  account   that  the  previous  page  number  was"
+            # f" {expected_book_pnum-1},    so   the    expected    page   number    is"
+            # f" {expected_book_pnum}."
+        )
+
+        # breakpoint()
+
+        output = llm_helpful_assistant(
+            message,
+            reasoning="low",
+            media_type="file",
+            media_data=file_data,
+            response_format=ParsedPDFPageNumber,
+        )
+
+        if output.error:
+            print(f"PDF page {pdf_pnum}, found nothing")
+            continue
+
+        book_pnum = output.pagenum
+        print(f"PDF page {pdf_pnum}, found page number {book_pnum}")
+
+        if book_pnum != expected_book_pnum:
+            for j in range(expected_book_pnum, book_pnum):
+                book_page_to_pdf_page.append((j, "?"))
+        book_page_to_pdf_page.append((book_pnum, pdf_pnum))
+        expected_book_pnum = book_pnum + 1
+
+    return book_page_to_pdf_page
+
+
+def save_pagenum_db(db, fpath):
+    with open(fpath, "w") as f:
+        for book_pnum, pdf_pnum in db:
+            f.write(f"{book_pnum} {pdf_pnum}\n")
 
 
 def main():
@@ -501,6 +562,7 @@ def main():
     # This should be the 1-indexed physical page of book page 1, minus 1.
     parser.add_argument("--parse-index--do-entry-adjustment", action="store_true")
     parser.add_argument("--parse-index--page-offset", type=int)
+    parser.add_argument("--make-pagenum-db--output")
     args = parser.parse_args()
 
     for fpath in args.fpath:
@@ -526,6 +588,7 @@ def main():
             )
             apply_pdf_toc(fpath, toc)
         elif args.cmd == "parse-index":
+            # TODO also allow user to provide --parse-index--pagenum-db
             if (not args.parse_index__page_offset) and (
                 not args.parse_index__do_entry_adjustment
             ):
@@ -543,8 +606,16 @@ def main():
             if args.parse_index__output:
                 index_fpath = args.parse_index_output
             else:
-                index_fpath = f"{fpath}.apindex"
+                index_fpath = f"{fpath}.index.autopdf"
             print_index(index, index_fpath)
+        elif args.cmd == "make-pagenum-db":
+            db = parse_pagenums(fpath)
+
+            if args.make_pagenum_db__output:
+                db_fpath = args.make_pagenum_db__output
+            else:
+                db_fpath = f"{fpath}.pagenum_db.autopdf"
+            save_pagenum_db(db, db_fpath)
         else:
             err(f"Unknown cmd {args.cmd}")
 
