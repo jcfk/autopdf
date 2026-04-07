@@ -490,6 +490,8 @@ def save_index(index, fpath):
             pnum = entry.page_number
             f.write(f"{pnum} {name}\n")
 
+    print(f"Saved AutoPDF index to \"{fpath}\"")
+
 
 def parse_pagenums(fpath):
     BATCH_SIZE_LIMIT = 5
@@ -555,6 +557,8 @@ def save_pagenum_db(pdf_page_to_book_page, fpath):
     with open(fpath, "w") as f:
         for pdf_pnum, book_pnum in pdf_page_to_book_page:
             f.write(f"{pdf_pnum} {book_pnum}\n")
+
+    print(f"Saved AutoPDF pagenum db to \"{fpath}\"")
 
 
 def main():
