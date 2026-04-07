@@ -11,6 +11,7 @@ import argparse
 import base64
 import tempfile
 import sys
+import time
 from pathlib import Path
 from io import BytesIO
 
@@ -64,9 +65,8 @@ class ParsedPDFIndex(BaseModel):
     entries: list[ParsedPDFIndexEntry]
 
 
-class ParsedPDFPageNumber(BaseModel):
-    pagenum: int | None
-    error: bool
+class ParsedPDFPageNumbers(BaseModel):
+    pagenums: list[int | None]
 
 
 def err(msg=None):
@@ -132,13 +132,13 @@ def get_pdf_slice_as_data(reader, first_page=None, last_page=None):
         i = first_page if first_page is not None else 0
         limit = last_page if last_page is not None else len(reader.pages) - 1
         # inclusive, 0-indexed
-        while i <= limit:
-            writer.add_page(reader.pages[i])
-            i += 1
+        pages = reader.pages[i : limit + 1]
+        for page in pages:
+            writer.add_page(page)
         writer.write(f)
         f.seek(0)
         # breakpoint()
-        return f.read()
+        return f.read(), len(pages)
 
 
 def parse_pdf_metadata(fpath, last_page):
@@ -317,7 +317,7 @@ def adjust_section_pagenum(section, file_data, physical_offset, with_file=False)
         page_idxs.remove(current_search_i)
 
         print(
-            f"Testing for section \"{section.title}\" (pagenum: {section.pagenum}) at pagenum {current_search_i + 1}"
+            f'Testing for section "{section.title}" (pagenum: {section.pagenum}) at pagenum {current_search_i + 1}'
         )
 
         confirmed = confirm_section_pagenum(
@@ -479,23 +479,38 @@ def print_index(index, fpath):
 
 
 def parse_pagenums(fpath):
-    reader = PdfReader(fpath)
-    book_page_to_pdf_page = []
+    BATCH_SIZE_LIMIT = 5
 
-    expected_book_pnum = 0
-    for i in range(len(reader.pages)):
-        pdf_pnum = i + 1
-        data = get_pdf_slice_as_data(reader, first_page=i, last_page=i)
+    reader = PdfReader(fpath)
+    pdf_page_to_book_page = []
+
+    # expected_book_pnum = 0
+    for i in range(0, len(reader.pages), BATCH_SIZE_LIMIT):
+        data, batch_size = get_pdf_slice_as_data(
+            reader, first_page=i, last_page=i + BATCH_SIZE_LIMIT - 1
+        )
         data_b64 = base64.b64encode(data).decode("utf-8")
         file_data = {"fname": fpath.name, "data_b64": data_b64}
 
+        pdf_pnums = [i + d + 1 for d in range(batch_size)]
+
         message = (
-            "Extract the integer page number from  the provided book page."
-            " Format your response  as a json object, where the  key 'pagenum' is an"
-            " integer with  the book page number,  and the key 'error'  is a boolean"
-            " that is true if  and only if no integer page  number can be extracted,"
-            " for example  when there  is no page  number shown, or  if the  page is"
-            " numbered in roman numerals or another non-integer scheme."
+            f"Extract  the integer  page number  from the  {batch_size} provided"
+            " book pages. Format  your response as a json object,  where the key"
+            " 'pagenums'  is   a  list[int  |  None]   of  length  {batch_size},"
+            " corresponding to the pages. Each element is either an integer page"
+            " number for  that page, or  None, if for  example when there  is no"
+            " page number shown, or when the  page is numbered in roman numerals"
+            " or another non-integer  scheme. Do not return a  number unless the"
+            " page has an integer book page number."
+            " The book  may be a  scan, in which case  pages may be  missing. In"
+            " this case, page numbers returned need not always be consecutive."
+            # The book  may be  a scan,  with additional  pages may  be inserted
+            # between adjacent book  pages. In this case, use  None to represent
+            # these non-book pages added between original book pages.
+            " The book may  neglect numbering certain pages,  like chapter title"
+            " pages. In this case, infer the page number from the following page"
+            " numbers."
             # " You  may  take  into  account   that  the  previous  page  number  was"
             # f" {expected_book_pnum-1},    so   the    expected    page   number    is"
             # f" {expected_book_pnum}."
@@ -505,32 +520,31 @@ def parse_pagenums(fpath):
 
         output = llm_helpful_assistant(
             message,
-            reasoning="low",
+            reasoning="medium",
             media_type="file",
             media_data=file_data,
-            response_format=ParsedPDFPageNumber,
+            response_format=ParsedPDFPageNumbers,
         )
 
-        if output.error:
-            print(f"PDF page {pdf_pnum}, found nothing")
-            continue
+        for pdf_pnum, book_pnum in zip(pdf_pnums, output.pagenums):
+            if book_pnum is not None:
+                print(f"PDF page {pdf_pnum}, found page number {book_pnum}")
+            else:
+                print(f"PDF page {pdf_pnum}, found page number {book_pnum}")
+            pdf_page_to_book_page.append((pdf_pnum, book_pnum))
 
-        book_pnum = output.pagenum
-        print(f"PDF page {pdf_pnum}, found page number {book_pnum}")
+        # if book_pnum != expected_book_pnum:
+        #     for j in range(expected_book_pnum, book_pnum):
+        #         book_page_to_pdf_page.append((j, "?"))
+        # expected_book_pnum = book_pnum + 1
 
-        if book_pnum != expected_book_pnum:
-            for j in range(expected_book_pnum, book_pnum):
-                book_page_to_pdf_page.append((j, "?"))
-        book_page_to_pdf_page.append((book_pnum, pdf_pnum))
-        expected_book_pnum = book_pnum + 1
-
-    return book_page_to_pdf_page
+    return pdf_page_to_book_page
 
 
-def save_pagenum_db(db, fpath):
+def save_pagenum_db(pdf_page_to_book_page, fpath):
     with open(fpath, "w") as f:
-        for book_pnum, pdf_pnum in db:
-            f.write(f"{book_pnum} {pdf_pnum}\n")
+        for pdf_pnum, book_pnum in pdf_page_to_book_page:
+            f.write(f"{pdf_pnum} {book_pnum}\n")
 
 
 def main():
@@ -564,6 +578,8 @@ def main():
     parser.add_argument("--parse-index--page-offset", type=int)
     parser.add_argument("--make-pagenum-db--output")
     args = parser.parse_args()
+
+    start_time = time.time()
 
     for fpath in args.fpath:
         fpath = Path(fpath)
@@ -609,18 +625,20 @@ def main():
                 index_fpath = f"{fpath}.index.autopdf"
             print_index(index, index_fpath)
         elif args.cmd == "make-pagenum-db":
-            db = parse_pagenums(fpath)
+            pdf_page_to_book_page = parse_pagenums(fpath)
 
             if args.make_pagenum_db__output:
                 db_fpath = args.make_pagenum_db__output
             else:
                 db_fpath = f"{fpath}.pagenum_db.autopdf"
-            save_pagenum_db(db, db_fpath)
+            save_pagenum_db(pdf_page_to_book_page, db_fpath)
         else:
             err(f"Unknown cmd {args.cmd}")
 
+    elapsed_time = time.time() - start_time
+    print(f"Total time: {elapsed_time:.2f}s")
     print(
-        f"Total usage: tokens in: {usage['tok_in']}, tokens out: {usage['tok_out']}, est cost: ${usage['est_cost']}"
+        f"Total usage: tokens in: {usage['tok_in']}, tokens out: {usage['tok_out']}, est cost: ${usage['est_cost']:.6f}"
     )
 
 
