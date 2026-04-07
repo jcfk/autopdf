@@ -690,3 +690,7 @@ if __name__ == "__main__":
 # - Fix bookmarks that  show children by default in firefox.  Fix bookmarks that
 #   automatically fit page width.
 # - Do not assume fpaths are basenames
+# - How  multiple   cands  with  seemingly   the  same  name   like  "Cumulative
+#   distribution function" from  Dudley and Royden will coexist, up  to a point,
+#   and then  only one  will remain. Oh,  no... the second  one won't  even open
+#   Royden.
