@@ -408,7 +408,7 @@ def apply_pdf_toc(fpath, toc):
 
 def parse_pdf_index_naive(reader, first_page):
     page_count = len(reader.pages)
-    data = get_pdf_slice_as_data(reader, first_page)
+    data, _ = get_pdf_slice_as_data(reader, first_page)
     data_b64 = base64.b64encode(data).decode("utf-8")
     file_data = {"fname": fpath.name, "data_b64": data_b64}
 
@@ -443,7 +443,25 @@ def parse_pdf_index_naive(reader, first_page):
     return output
 
 
-def parse_pdf_index(fpath, first_page, do_entry_adjustment, page_offset=None):
+def read_pagenum_db(fpath):
+    with open(fpath, "r") as f:
+        book_pnum_to_pdf_pnum = {}
+        for line in f:
+            line = line.rstrip()
+            pdf_pnum, book_pnum = line.split(" ")
+            pdf_pnum = int(pdf_pnum)
+            try:
+                book_pnum = int(book_pnum)
+                book_pnum_to_pdf_pnum[book_pnum] = pdf_pnum
+            except:
+                pass
+
+        return book_pnum_to_pdf_pnum
+
+
+def parse_pdf_index(
+    fpath, first_page, validation_method, page_offset=None, pnum_db_fpath=None
+):
     reader = PdfReader(fpath)
     index = parse_pdf_index_naive(reader, first_page)
 
@@ -460,12 +478,15 @@ def parse_pdf_index(fpath, first_page, do_entry_adjustment, page_offset=None):
             flat_index.entries.append(flat_entry)
             i += 1
 
-    # if do_entry_adjustment:
-    #     # hypothetically, do entry-by-entry adjustment like with TOC
-    #     pass
-    # else:
-    for entry in flat_index.entries:
-        entry.page_number += page_offset
+    if validation_method == "radial_adjust":
+        pass
+    elif validation_method == "naive_offset":
+        for entry in flat_index.entries:
+            entry.page_number += page_offset
+    elif validation_method == "pagenum_db":
+        db = read_pagenum_db(pnum_db_fpath)
+        for entry in flat_index.entries:
+            entry.page_number = db[entry.page_number]
 
     return flat_index
 
@@ -574,8 +595,9 @@ def main():
     )
     parser.add_argument("--parse-index--output")
     # This should be the 1-indexed physical page of book page 1, minus 1.
-    parser.add_argument("--parse-index--do-entry-adjustment", action="store_true")
+    parser.add_argument("--parse-index--validation-method")
     parser.add_argument("--parse-index--page-offset", type=int)
+    parser.add_argument("--parse-index--pagenum-db")
     parser.add_argument("--make-pagenum-db--output")
     args = parser.parse_args()
 
@@ -605,18 +627,15 @@ def main():
             apply_pdf_toc(fpath, toc)
         elif args.cmd == "parse-index":
             # TODO also allow user to provide --parse-index--pagenum-db
-            if (not args.parse_index__page_offset) and (
-                not args.parse_index__do_entry_adjustment
-            ):
-                err(
-                    f"Must provide either --parse-index--page-offset or --parse-index--do-entry-adjustment"
-                )
+            if not args.parse_index__validation_method:
+                err(f"Must provide --parse-index--validation-method")
 
             index = parse_pdf_index(
                 fpath,
                 args.parse_index__first_page - 1,
-                args.parse_index__do_entry_adjustment,
+                args.parse_index__validation_method,
                 page_offset=args.parse_index__page_offset,
+                pnum_db_fpath=args.parse_index__pagenum_db,
             )
 
             if args.parse_index__output:
