@@ -427,7 +427,7 @@ def parse_pdf_index_naive(reader, read_from_pidx):
 
     output = llm_helpful_assistant(
         message,
-        reasoning="medium",
+        reasoning=args.reasoning,
         media_type="file",
         media_data=file_data,
         response_format=ParsedPDFIndex,
@@ -565,6 +565,7 @@ def main():
     global args, fpath
     parser = argparse.ArgumentParser("autopdf")
     parser.add_argument("--autopdf-dir", type=Path, required=True)
+    parser.add_argument("--reasoning")
     subparsers = parser.add_subparsers(dest="cmd")
 
     rename_parser = subparsers.add_parser("rename")
